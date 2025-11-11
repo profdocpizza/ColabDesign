@@ -379,9 +379,50 @@ class _af_prep:
   
     self._prep_model(**kwargs)
 
+  def _prep_binder_antitarget(self, pdb_filename, target_chain="A", binder_len=50,
+                              binder_chain=None, hotspot=None,
+                              antitargets=None,
+                              **kwargs):
+    '''
+    prep inputs for binder design with antitargets
+    ---------------------------------------------------
+    - antitargets = "self,./1cvp.pdb:B"
+    ---------------------------------------------------
+    '''
+    self._prep_binder(pdb_filename=pdb_filename, target_chain=target_chain,
+                      binder_len=binder_len, binder_chain=binder_chain,
+                      hotspot=hotspot, **kwargs)
+
+    self._antitarget_lens = []
+    self._inputs["antitarget_definitions"] = []
+    if antitargets is not None:
+      for antitarget_str in antitargets.split(","):
+        if antitarget_str == "self":
+          self._inputs["antitarget_definitions"].append({"type": "self"})
+          self._antitarget_lens.append(self._binder_len)
+        else:
+          pdb, chain = antitarget_str.split(":")
+          parsed_pdb = prep_pdb_parser(pdb, chain)
+          self._inputs["antitarget_definitions"].append({"type": "pdb", "batch": parsed_pdb})
+          self._antitarget_lens.append(parsed_pdb['aatype'].shape[0])
+
 #######################
 # utils
 #######################
+def prep_pdb_parser(pdb_filename, chain=None, ignore_missing=False):
+  pdb_str = pdb_to_string(pdb_filename, chains=chain, models=[1])
+  protein_obj = protein.from_pdb_string(pdb_str, chain_id=chain)
+  batch = {'aatype': protein_obj.aatype,
+           'all_atom_positions': protein_obj.atom_positions,
+           'all_atom_mask': protein_obj.atom_mask,
+           'residue_index': protein_obj.residue_index}
+
+  if ignore_missing:
+    r = batch["all_atom_mask"][:,0] == 1
+    batch = jax.tree_util.tree_map(lambda x:x[r], batch)
+
+  return batch
+
 def repeat_idx(idx, copies=1, offset=50):
   idx_offset = np.repeat(np.cumsum([0]+[idx[-1]+offset]*(copies-1)),len(idx))
   return np.tile(idx,copies) + idx_offset

@@ -21,11 +21,21 @@ class _af_inputs:
     aux.update({"seq":seq, "seq_pseudo":seq["pseudo"]})
     
     # protocol specific modifications to seq features
-    if self.protocol == "binder":
+    if self.protocol == "binder" or self.protocol == "binder_antitarget":
       # concatenate target and binder sequence
       seq_target = jax.nn.one_hot(inputs["batch"]["aatype"][:self._target_len],self._args["alphabet_size"])
       seq_target = jnp.broadcast_to(seq_target,(self._num, *seq_target.shape))
-      seq = jax.tree_util.tree_map(lambda x:jnp.concatenate([seq_target,x],1), seq)
+      binder_seq = seq
+      seq = jax.tree_util.tree_map(lambda x:jnp.concatenate([seq_target,x],1), binder_seq)
+
+    if self.protocol == "binder_antitarget" and "antitarget_definitions" in self._inputs:
+      for antitarget_def in self._inputs["antitarget_definitions"]:
+        if antitarget_def["type"] == "self":
+          seq = jax.tree_util.tree_map(lambda x,y:jnp.concatenate([x,y],1), seq, binder_seq)
+        else: # pdb
+          seq_antitarget = jax.nn.one_hot(antitarget_def["batch"]["aatype"],self._args["alphabet_size"])
+          seq_antitarget = jnp.broadcast_to(seq_antitarget,(self._num, *seq_antitarget.shape))
+          seq = jax.tree_util.tree_map(lambda x:jnp.concatenate([x,seq_antitarget],1), seq)
       
     if self.protocol in ["fixbb","hallucination","partial"] and self._args["copies"] > 1:
       seq = jax.tree_util.tree_map(lambda x:expand_copies(x, self._args["copies"], self._args["block_diag"]), seq)

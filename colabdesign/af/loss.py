@@ -146,6 +146,68 @@ class _af_loss:
     # unsupervised losses
     self._loss_unsupervised(inputs, outputs, aux)
 
+  def _loss_binder_antitarget(self, inputs, outputs, aux):
+    '''get losses'''
+    opt = inputs["opt"]
+    mask = inputs["seq_mask"]
+    zeros = jnp.zeros_like(mask)
+
+    tL,bL = self._target_len, self._binder_len
+
+    target_id = zeros.at[:tL].set(mask[:tL])
+    binder_id = zeros.at[tL:tL+bL].set(mask[tL:tL+bL])
+
+    if "hotspot" in opt:
+      hotspot_id = zeros.at[opt["hotspot"]].set(mask[opt["hotspot"]])
+      i_con_loss = get_con_loss(inputs, outputs, opt["i_con"], mask_1d=hotspot_id, mask_1b=binder_id)
+    else:
+      i_con_loss = get_con_loss(inputs, outputs, opt["i_con"], mask_1d=binder_id, mask_1b=target_id)
+
+    # unsupervised losses for binder
+    aux["losses"].update({
+      "plddt":   get_plddt_loss(outputs, mask_1d=binder_id),
+      "exp_res": get_exp_res_loss(outputs, mask_1d=binder_id),
+      "pae":     get_pae_loss(outputs, mask_1d=binder_id),
+      "con":     get_con_loss(inputs, outputs, opt["con"], mask_1d=binder_id, mask_1b=binder_id),
+      "i_con":   i_con_loss,
+      "i_pae":   get_pae_loss(outputs, mask_1d=binder_id, mask_1b=target_id),
+    })
+
+    # antitarget loss
+    antitarget_loss = 0
+    if hasattr(self, "_antitarget_lens") and len(self._antitarget_lens) > 0:
+      start_index = tL + bL
+      for atL in self._antitarget_lens:
+        end_index = start_index + atL
+        antitarget_id = zeros.at[start_index:end_index].set(mask[start_index:end_index])
+        i_con_at = get_con_loss(inputs, outputs, opt["i_con"], mask_1d=binder_id, mask_1b=antitarget_id)
+        i_pae_at = get_pae_loss(outputs, mask_1d=binder_id, mask_1b=antitarget_id)
+        antitarget_loss += i_con_at + i_pae_at
+        start_index = end_index
+
+    aux["losses"]["antitarget_loss"] = -antitarget_loss
+
+    # supervised losses for redesign
+    if self._args["redesign"]:
+      aln = get_rmsd_loss(inputs, outputs, L=tL, include_L=False)
+      align_fn = aln["align"]
+
+      aatype = inputs["aatype"]
+      cce = get_dgram_loss(inputs, outputs, aatype=aatype, return_mtx=True)
+      fape = get_fape_loss(inputs, outputs, clamp=opt["fape_cutoff"], return_mtx=True)
+
+      aux["losses"].update({
+        "rmsd":      aln["rmsd"],
+        "dgram_cce": cce[tL:tL+bL].sum() / (mask[tL:tL+bL].sum() + 1e-8),
+        "fape":      fape[tL:tL+bL].sum() / (mask[tL:tL+bL].sum() + 1e-8)
+      })
+
+    else:
+      align_fn = get_rmsd_loss(inputs, outputs, L=tL)["align"]
+
+    if self._args["realign"]:
+      aux["atom_positions"] = align_fn(aux["atom_positions"]) * aux["atom_mask"][...,None]
+
   def _loss_unsupervised(self, inputs, outputs, aux):
 
     # define masks

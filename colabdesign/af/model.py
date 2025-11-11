@@ -28,7 +28,7 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
                debug=False,
                data_dir=".", 
                **kwargs):  
-    assert protocol in ["fixbb","hallucination","binder","partial"]
+    assert protocol in ["fixbb","hallucination","binder","partial","binder_antitarget"]
 
     self.protocol = protocol
     self._num = kwargs.pop("num_seq",1)
@@ -50,7 +50,7 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
                 "con":      {"num":2, "cutoff":14.0, "binary":False, "seqsep":9, "num_pos":float("inf")},
                 "i_con":    {"num":1, "cutoff":21.6875, "binary":False, "num_pos":float("inf")},
                 "template": {"rm_ic":False},                
-                "weights":  {"seq_ent":0.0, "plddt":0.0, "pae":0.0, "exp_res":0.0, "helix":0.0},
+                "weights":  {"seq_ent":0.0, "plddt":0.0, "pae":0.0, "exp_res":0.0, "helix":0.0, "antitarget_loss":1.0},
                 "fape_cutoff":10.0}
 
     self._params = {}
@@ -129,9 +129,9 @@ class mk_af_model(design_model, _af_inputs, _af_loss, _af_prep, _af_design, _af_
     #####################################
     # set protocol specific functions
     #####################################
-    idx = ["fixbb","hallucination","binder","partial"].index(self.protocol)
-    self.prep_inputs = [self._prep_fixbb, self._prep_hallucination, self._prep_binder, self._prep_partial][idx]
-    self._get_loss   = [self._loss_fixbb, self._loss_hallucination, self._loss_binder, self._loss_partial][idx]
+    idx = ["fixbb","hallucination","binder","partial","binder_antitarget"].index(self.protocol)
+    self.prep_inputs = [self._prep_fixbb, self._prep_hallucination, self._prep_binder, self._prep_partial, self._prep_binder_antitarget][idx]
+    self._get_loss   = [self._loss_fixbb, self._loss_hallucination, self._loss_binder, self._loss_partial, self._loss_binder_antitarget][idx]
 
   def _get_model(self, cfg, callback=None):
 
