@@ -22,33 +22,41 @@ class _af_inputs:
     
     # protocol specific modifications to seq features
     if self.protocol == "binder" or self.protocol == "binder_antitarget":
-      # concatenate target and binder sequence
-      seq_target = jax.nn.one_hot(inputs["batch"]["aatype"][:self._target_len],self._args["alphabet_size"])
-      seq_target = jnp.broadcast_to(seq_target,(self._num, *seq_target.shape))
-      binder_seq = seq
-      seq = jax.tree_util.tree_map(lambda x:jnp.concatenate([seq_target,x],1), binder_seq)
+        # get one_hot sequences for all components
+        seq_target = jax.nn.one_hot(inputs["batch"]["aatype"][:self._target_len], self._args["alphabet_size"])
+        seq_target = jnp.broadcast_to(seq_target,(self._num, *seq_target.shape))
 
-    if self.protocol == "binder_antitarget" and "antitarget_lens" in inputs:
+        # initialize full sequence
+        total_len = sum(self._lengths)
+        full_seq = jnp.zeros((self._num, total_len, self._args["alphabet_size"]))
 
-        def body_fun(i, seq):
-            # true_fn for "self" antitarget
-            def true_fn(s):
-                return jax.tree_util.tree_map(lambda x, y: jnp.concatenate([x, y], 1), s, binder_seq)
+        # place target sequence
+        full_seq = jax.lax.dynamic_update_slice(full_seq, seq_target, (0, 0, 0))
 
-            # false_fn for PDB antitarget
-            def false_fn(s):
-                start = inputs["antitarget_start_indices"][i]
-                end = start + inputs["antitarget_lens"][i]
-                seq_antitarget = jax.nn.one_hot(inputs["batch"]["aatype"][start:end], self._args["alphabet_size"])
-                seq_antitarget = jnp.broadcast_to(seq_antitarget, (self._num, *seq_antitarget.shape))
-                return jax.tree_util.tree_map(lambda x: jnp.concatenate([x, seq_antitarget], 1), s)
+        # place binder sequence
+        full_seq = jax.lax.dynamic_update_slice(full_seq, seq["pseudo"], (0, self._target_len, 0))
 
-            # jax.lax.cond to choose which function to apply
-            return jax.lax.cond(inputs["antitarget_types"][i] == 0, true_fn, false_fn, seq)
+        if self.protocol == "binder_antitarget" and "antitarget_lens" in inputs:
 
-        # Use fori_loop to iterate through antitargets
-        seq = jax.lax.fori_loop(0, len(inputs["antitarget_lens"]), body_fun, seq)
-      
+            def body_fun(i, s):
+                # if pdb antitarget, insert pdb sequence
+                s = jax.lax.cond(inputs["antitarget_types"][i] == 1,
+                                 lambda x: jax.lax.dynamic_update_slice(x,
+                                                                        jax.nn.one_hot(inputs["batch"]["aatype"][inputs["antitarget_start_indices"][i]:inputs["antitarget_start_indices"][i]+inputs["antitarget_lens"][i]], self._args["alphabet_size"]),
+                                                                        (0, inputs["antitarget_start_indices"][i], 0)),
+                                 lambda x: x,
+                                 s)
+                # if self antitarget, insert binder sequence
+                s = jax.lax.cond(inputs["antitarget_types"][i] == 0,
+                                 lambda x: jax.lax.dynamic_update_slice(x, seq["pseudo"], (0, inputs["antitarget_start_indices"][i], 0)),
+                                 lambda x: x,
+                                 s)
+                return s
+
+            full_seq = jax.lax.fori_loop(0, len(inputs["antitarget_lens"]), body_fun, full_seq)
+
+        seq = {"pseudo": full_seq, "pseudo_hard": full_seq.argmax(-1)}
+
     if self.protocol in ["fixbb","hallucination","partial"] and self._args["copies"] > 1:
       seq = jax.tree_util.tree_map(lambda x:expand_copies(x, self._args["copies"], self._args["block_diag"]), seq)
 

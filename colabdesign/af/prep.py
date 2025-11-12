@@ -387,41 +387,46 @@ class _af_prep:
     prep inputs for binder design with antitargets
     - antitargets = "self,./1cvp.pdb:B"
     '''
+    # prepare main binder
     self._prep_binder(pdb_filename=pdb_filename, target_chain=target_chain,
                       binder_len=binder_len, binder_chain=binder_chain,
                       hotspot=hotspot, **kwargs)
 
     if antitargets is not None:
         # parse antitargets
-        pdb_at_aatypes = []
+        at_batches = []
         at_lens = []
         at_types = []
 
         for at_str in antitargets.split(","):
             if at_str == "self":
-                at_lens.append(self._binder_len)
+                at_len = self._binder_len
+                at_lens.append(at_len)
                 at_types.append(0) # 0 for self
+                # placeholder for self, will be filled in _get_seq
+                at_batches.append(prep_input_features(L=at_len))
             else: # pdb
                 pdb, chain = at_str.split(":")
                 parsed_pdb = prep_pdb_parser(pdb, chain)
                 at_len = len(parsed_pdb['aatype'])
-                pdb_at_aatypes.append(parsed_pdb['aatype'])
+                at_batches.append(parsed_pdb)
                 at_lens.append(at_len)
                 at_types.append(1) # 1 for pdb
 
-        # update aatype for all pdb-based antitargets
-        if pdb_at_aatypes:
-            self._inputs["batch"]["aatype"] = np.concatenate([self._inputs["batch"]["aatype"]] + pdb_at_aatypes)
+        # combine all batches (target, binder, and antitargets)
+        all_batches = [self._inputs["batch"]] + at_batches
+        self._inputs["batch"] = jax.tree_util.tree_map(lambda *x: np.concatenate(x, 0), *all_batches)
 
+        # update lengths and antitarget info
         self._antitarget_lens = at_lens
         self._inputs["antitarget_types"] = np.array(at_types)
         self._inputs["antitarget_lens"] = np.array(at_lens)
 
-        # get new total length and pad features
-        total_len = len(self._inputs["batch"]["aatype"]) + at_types.count(0) * self._binder_len
+        total_len = sum(self._lengths) + sum(at_lens)
         _pad_features(self._inputs, total_len)
 
-        # set start indices for antitargets
+        # set start indices for binder and antitargets
+        self._inputs["binder_start_indices"] = np.array([self._target_len])
         at_start_indices = []
         current_pos = sum(self._lengths)
         for at_len in at_lens:
@@ -430,24 +435,13 @@ class _af_prep:
         self._inputs["antitarget_start_indices"] = np.array(at_start_indices)
 
         # update residue index, lengths, and multimer info
-        old_len = sum(self._lengths)
-        new_res_idx_parts = [self._inputs["residue_index"][:old_len]]
+        new_res_idx_parts = [self._inputs["residue_index"][:sum(self._lengths)]]
         last_res_idx = new_res_idx_parts[0][-1]
 
-        # add pdb antitargets to residue index
-        pdb_at_idx = 0
-        for at_type, at_len in zip(at_types, at_lens):
-            if at_type == 1:
-                new_part = np.arange(last_res_idx + 50, last_res_idx + 50 + at_len)
-                new_res_idx_parts.append(new_part)
-                last_res_idx = new_part[-1]
-
-        # add self antitargets to residue index
-        for at_type, at_len in zip(at_types, at_lens):
-            if at_type == 0:
-                new_part = np.arange(last_res_idx + 50, last_res_idx + 50 + at_len)
-                new_res_idx_parts.append(new_part)
-                last_res_idx = new_part[-1]
+        for at_len in at_lens:
+            new_part = np.arange(last_res_idx + 50, last_res_idx + 50 + at_len)
+            new_res_idx_parts.append(new_part)
+            last_res_idx = new_part[-1] if len(new_part) > 0 else last_res_idx
 
         self._inputs["residue_index"] = np.concatenate(new_res_idx_parts)
         self._lengths.extend(self._antitarget_lens)
