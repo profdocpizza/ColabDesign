@@ -389,22 +389,58 @@ class _af_prep:
     - antitargets = "self,./1cvp.pdb:B"
     ---------------------------------------------------
     '''
+    # aatype = is used to define template's CB coordinates (CA in case of glycine)
+    aatype = kwargs.pop("aatype", None)
     self._prep_binder(pdb_filename=pdb_filename, target_chain=target_chain,
                       binder_len=binder_len, binder_chain=binder_chain,
                       hotspot=hotspot, **kwargs)
 
     self._antitarget_lens = []
-    self._inputs["antitarget_definitions"] = []
     if antitargets is not None:
-      for antitarget_str in antitargets.split(","):
-        if antitarget_str == "self":
-          self._inputs["antitarget_definitions"].append({"type": "self"})
-          self._antitarget_lens.append(self._binder_len)
-        else:
-          pdb, chain = antitarget_str.split(":")
-          parsed_pdb = prep_pdb_parser(pdb, chain)
-          self._inputs["antitarget_definitions"].append({"type": "pdb", "batch": parsed_pdb})
-          self._antitarget_lens.append(parsed_pdb['aatype'].shape[0])
+
+        self._inputs["antitarget_aatype"] = []
+        self._inputs["antitarget_len"] = []
+        self._inputs["antitarget_types"] = []
+
+
+        for antitarget_str in antitargets.split(","):
+            if antitarget_str == "self":
+                self._inputs["antitarget_len"].append(self._binder_len)
+                self._inputs["antitarget_types"].append(0) # 0 for self
+
+            else: # pdb
+                pdb, chain = antitarget_str.split(":")
+                parsed_pdb = prep_pdb_parser(pdb, chain)
+                self._inputs["antitarget_aatype"].append(parsed_pdb['aatype'])
+                self._inputs["antitarget_len"].append(len(parsed_pdb['aatype']))
+                self._inputs["antitarget_types"].append(1) # 1 for pdb
+
+        # Adjust residue index and batch for antitargets
+        self._antitarget_lens = self._inputs["antitarget_len"]
+
+        total_len = sum(self._lengths) + sum(self._antitarget_lens)
+
+        res_idx = self._inputs["residue_index"]
+
+        if len(self._inputs["antitarget_aatype"]) > 0:
+            antitarget_aatype = np.concatenate(self._inputs["antitarget_aatype"])
+
+            # Update aatype
+            self._inputs["batch"]["aatype"] = np.concatenate([self._inputs["batch"]["aatype"], antitarget_aatype])
+
+        # Update residue index
+        last_res_idx = res_idx[-1]
+        for at_len in self._antitarget_lens:
+            res_idx = np.append(res_idx, np.arange(last_res_idx + 50, last_res_idx + 50 + at_len))
+            last_res_idx = res_idx[-1]
+        self._inputs["residue_index"] = res_idx
+
+        # Update lengths and multimer info
+        self._lengths.extend(self._antitarget_lens)
+        self._inputs.update(get_multi_id(self._lengths))
+
+        self._inputs = self._prep_features(num_res=total_len, num_seq=1)
+        self._inputs["batch"] = make_fixed_size(self._pdb["batch"], num_res=total_len)
 
 #######################
 # utils

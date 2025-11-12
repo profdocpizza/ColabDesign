@@ -28,14 +28,22 @@ class _af_inputs:
       binder_seq = seq
       seq = jax.tree_util.tree_map(lambda x:jnp.concatenate([seq_target,x],1), binder_seq)
 
-    if self.protocol == "binder_antitarget" and "antitarget_definitions" in self._inputs:
-      for antitarget_def in self._inputs["antitarget_definitions"]:
-        if antitarget_def["type"] == "self":
-          seq = jax.tree_util.tree_map(lambda x,y:jnp.concatenate([x,y],1), seq, binder_seq)
-        else: # pdb
-          seq_antitarget = jax.nn.one_hot(antitarget_def["batch"]["aatype"],self._args["alphabet_size"])
-          seq_antitarget = jnp.broadcast_to(seq_antitarget,(self._num, *seq_antitarget.shape))
-          seq = jax.tree_util.tree_map(lambda x:jnp.concatenate([x,seq_antitarget],1), seq)
+    if self.protocol == "binder_antitarget" and "antitarget_len" in inputs:
+
+        def body_fun(i, seq):
+            def true_fn(): # self
+                return jax.tree_util.tree_map(lambda x,y:jnp.concatenate([x,y],1), seq, binder_seq)
+
+            def false_fn(): # pdb
+                start = self._target_len + self._binder_len + sum(inputs["antitarget_len"][:i])
+                end = start + inputs["antitarget_len"][i]
+                seq_antitarget = jax.nn.one_hot(inputs["batch"]["aatype"][start:end], self._args["alphabet_size"])
+                seq_antitarget = jnp.broadcast_to(seq_antitarget, (self._num, *seq_antitarget.shape))
+                return jax.tree_util.tree_map(lambda x:jnp.concatenate([x, seq_antitarget], 1), seq)
+
+            return jax.lax.cond(inputs["antitarget_types"][i] == 0, true_fn, false_fn)
+
+        seq = jax.lax.fori_loop(0, len(inputs["antitarget_len"]), body_fun, seq)
       
     if self.protocol in ["fixbb","hallucination","partial"] and self._args["copies"] > 1:
       seq = jax.tree_util.tree_map(lambda x:expand_copies(x, self._args["copies"], self._args["block_diag"]), seq)
