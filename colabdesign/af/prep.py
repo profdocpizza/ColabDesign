@@ -385,66 +385,84 @@ class _af_prep:
                               **kwargs):
     '''
     prep inputs for binder design with antitargets
-    ---------------------------------------------------
     - antitargets = "self,./1cvp.pdb:B"
-    ---------------------------------------------------
     '''
-    # aatype = is used to define template's CB coordinates (CA in case of glycine)
-    aatype = kwargs.pop("aatype", None)
     self._prep_binder(pdb_filename=pdb_filename, target_chain=target_chain,
                       binder_len=binder_len, binder_chain=binder_chain,
                       hotspot=hotspot, **kwargs)
 
-    self._antitarget_lens = []
     if antitargets is not None:
+        # parse antitargets
+        pdb_at_aatypes = []
+        at_lens = []
+        at_types = []
 
-        self._inputs["antitarget_aatype"] = []
-        self._inputs["antitarget_len"] = []
-        self._inputs["antitarget_types"] = []
-
-
-        for antitarget_str in antitargets.split(","):
-            if antitarget_str == "self":
-                self._inputs["antitarget_len"].append(self._binder_len)
-                self._inputs["antitarget_types"].append(0) # 0 for self
-
+        for at_str in antitargets.split(","):
+            if at_str == "self":
+                at_lens.append(self._binder_len)
+                at_types.append(0) # 0 for self
             else: # pdb
-                pdb, chain = antitarget_str.split(":")
+                pdb, chain = at_str.split(":")
                 parsed_pdb = prep_pdb_parser(pdb, chain)
-                self._inputs["antitarget_aatype"].append(parsed_pdb['aatype'])
-                self._inputs["antitarget_len"].append(len(parsed_pdb['aatype']))
-                self._inputs["antitarget_types"].append(1) # 1 for pdb
+                at_len = len(parsed_pdb['aatype'])
+                pdb_at_aatypes.append(parsed_pdb['aatype'])
+                at_lens.append(at_len)
+                at_types.append(1) # 1 for pdb
 
-        # Adjust residue index and batch for antitargets
-        self._antitarget_lens = self._inputs["antitarget_len"]
+        # update aatype for all pdb-based antitargets
+        if pdb_at_aatypes:
+            self._inputs["batch"]["aatype"] = np.concatenate([self._inputs["batch"]["aatype"]] + pdb_at_aatypes)
 
-        total_len = sum(self._lengths) + sum(self._antitarget_lens)
+        self._antitarget_lens = at_lens
+        self._inputs["antitarget_types"] = np.array(at_types)
+        self._inputs["antitarget_lens"] = np.array(at_lens)
 
-        res_idx = self._inputs["residue_index"]
+        # get new total length and pad features
+        total_len = len(self._inputs["batch"]["aatype"]) + at_types.count(0) * self._binder_len
+        _pad_features(self._inputs, total_len)
 
-        if len(self._inputs["antitarget_aatype"]) > 0:
-            antitarget_aatype = np.concatenate(self._inputs["antitarget_aatype"])
+        # update residue index, lengths, and multimer info
+        old_len = sum(self._lengths)
+        old_res_idx = self._inputs["residue_index"][:old_len]
+        last_res_idx = old_res_idx[-1] if old_len > 0 else 0
 
-            # Update aatype
-            self._inputs["batch"]["aatype"] = np.concatenate([self._inputs["batch"]["aatype"], antitarget_aatype])
+        new_res_idx_parts = [self._inputs["residue_index"][:len(self._inputs["batch"]["aatype"])]]
+        last_res_idx = new_res_idx_parts[0][-1]
 
-        # Update residue index
-        last_res_idx = res_idx[-1]
-        for at_len in self._antitarget_lens:
-            res_idx = np.append(res_idx, np.arange(last_res_idx + 50, last_res_idx + 50 + at_len))
-            last_res_idx = res_idx[-1]
-        self._inputs["residue_index"] = res_idx
+        for at_type in at_types:
+            if at_type == 0: # self
+                at_len = self._binder_len
+                new_part = np.arange(last_res_idx + 50, last_res_idx + 50 + at_len)
+                new_res_idx_parts.append(new_part)
+                last_res_idx = new_part[-1] if len(new_part) > 0 else last_res_idx
 
-        # Update lengths and multimer info
+        self._inputs["residue_index"] = np.concatenate(new_res_idx_parts)
         self._lengths.extend(self._antitarget_lens)
         self._inputs.update(get_multi_id(self._lengths))
-
-        self._inputs = self._prep_features(num_res=total_len, num_seq=1)
-        self._inputs["batch"] = make_fixed_size(self._pdb["batch"], num_res=total_len)
 
 #######################
 # utils
 #######################
+def _pad_features(inputs, total_len):
+    """Pads all features in the inputs dictionary to a new total_len."""
+    shape_schema = {k: v for k, v in config.CONFIG.data.eval.feat.items()}
+    num_res_placeholder = shape_placeholders.NUM_RES
+
+    for key, val in inputs.items():
+        if key == "batch":
+            _pad_features(val, total_len) # Recurse for batch
+        elif key in shape_schema:
+            schema = shape_schema[key]
+            if num_res_placeholder in schema:
+                # This array needs padding
+                len_axis = schema.index(num_res_placeholder)
+                old_len = val.shape[len_axis]
+                if old_len < total_len:
+                    padding = [(0, 0)] * val.ndim
+                    padding[len_axis] = (0, total_len - old_len)
+                    inputs[key] = np.pad(val, padding)
+    return inputs
+
 def prep_pdb_parser(pdb_filename, chain=None, ignore_missing=False):
   pdb_str = pdb_to_string(pdb_filename, chains=chain, models=[1])
   protein_obj = protein.from_pdb_string(pdb_str, chain_id=chain)
