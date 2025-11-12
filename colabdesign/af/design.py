@@ -396,6 +396,9 @@ class _af_design:
     N,L = seq.shape
 
     # fix some positions
+    if self.protocol == "binder_antitarget":
+        plddt = plddt[self._target_len:self._target_len + self._binder_len]
+
     i_prob = np.ones(L) if plddt is None else np.maximum(1-plddt,0)
     i_prob[np.isnan(i_prob)] = 0
     if "fix_pos" in self.opt:
@@ -445,7 +448,12 @@ class _af_design:
     # get current plddt
     aux = self.predict(seq, return_aux=True, verbose=False, **model_flags, **kwargs)
     plddt = self.aux["plddt"]
-    plddt = plddt[self._target_len:] if self.protocol == "binder" else plddt[:self._len]
+    if self.protocol == "binder":
+        plddt = plddt[self._target_len:]
+    elif self.protocol == "binder_antitarget":
+        plddt = plddt[self._target_len:self._target_len + self._binder_len]
+    else:
+        plddt = plddt[:self._len]
 
     # optimize!
     if verbose:
@@ -553,7 +561,12 @@ class _af_design:
         (current_seq,current_loss) = (mut_seq,loss)
         
         plddt = aux["all"]["plddt"].mean(0)
-        plddt = plddt[self._target_len:] if self.protocol == "binder" else plddt[:self._len]
+        if self.protocol == "binder":
+            plddt = plddt[self._target_len:]
+        elif self.protocol == "binder_antitarget":
+            plddt = plddt[self._target_len:self._target_len + self._binder_len]
+        else:
+            plddt = plddt[:self._len]
         
         if loss < best_loss:
           (best_loss, self._k) = (loss, i)

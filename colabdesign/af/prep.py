@@ -421,20 +421,33 @@ class _af_prep:
         total_len = len(self._inputs["batch"]["aatype"]) + at_types.count(0) * self._binder_len
         _pad_features(self._inputs, total_len)
 
+        # set start indices for antitargets
+        at_start_indices = []
+        current_pos = sum(self._lengths)
+        for at_len in at_lens:
+            at_start_indices.append(current_pos)
+            current_pos += at_len
+        self._inputs["antitarget_start_indices"] = np.array(at_start_indices)
+
         # update residue index, lengths, and multimer info
         old_len = sum(self._lengths)
-        old_res_idx = self._inputs["residue_index"][:old_len]
-        last_res_idx = old_res_idx[-1] if old_len > 0 else 0
-
-        new_res_idx_parts = [self._inputs["residue_index"][:len(self._inputs["batch"]["aatype"])]]
+        new_res_idx_parts = [self._inputs["residue_index"][:old_len]]
         last_res_idx = new_res_idx_parts[0][-1]
 
-        for at_type in at_types:
-            if at_type == 0: # self
-                at_len = self._binder_len
+        # add pdb antitargets to residue index
+        pdb_at_idx = 0
+        for at_type, at_len in zip(at_types, at_lens):
+            if at_type == 1:
                 new_part = np.arange(last_res_idx + 50, last_res_idx + 50 + at_len)
                 new_res_idx_parts.append(new_part)
-                last_res_idx = new_part[-1] if len(new_part) > 0 else last_res_idx
+                last_res_idx = new_part[-1]
+
+        # add self antitargets to residue index
+        for at_type, at_len in zip(at_types, at_lens):
+            if at_type == 0:
+                new_part = np.arange(last_res_idx + 50, last_res_idx + 50 + at_len)
+                new_res_idx_parts.append(new_part)
+                last_res_idx = new_part[-1]
 
         self._inputs["residue_index"] = np.concatenate(new_res_idx_parts)
         self._lengths.extend(self._antitarget_lens)
